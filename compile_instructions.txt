@@ -1,0 +1,7 @@
+open a dos box
+
+browse to C:\python27\tools\pyinstaller-2.1
+
+run the following command
+python pyinstaller.py -F -p c:\Python27 -p c:\Python27\Lib -p C:\Python27\Lib\site-packages C:\Dev\MeterData\MeterDataLoader.py
+
