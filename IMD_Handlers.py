@@ -17,12 +17,15 @@ from cdecimal import Decimal
 from numpy import all, arange, float64
 import os
 from zipfile import ZipFile
+from datadog import api as DataDogAPI
 #import xml.etree.ElementTree as ET
 
 
 logger = logging.getLogger(__name__)
 # db_connection_string = 'Driver={SQL Server Native Client 11.0};Server=MEL-LT-001\SQLEXPRESS;Database=MeterDataDB;Trusted_Connection=yes;'
 # conn = pyodbc.connect(db_connection_string)
+# Logging tag
+tags = ['version:1', 'application:meter data loader']
 
 def format_column_heading(ch):
     # handle tupleized columns
@@ -114,12 +117,17 @@ def csv_load(source_file_id,fname,conn,dest_table,header_end_text=None,footer_st
     # identify payload, top & tail
     start_index = 0 if header_end_text is None else s.find(header_end_text)+len(header_end_text)
     if header_end_text is not None and start_index<len(header_end_text):    # note: find returns -1 if string not found
-        logger.error("The text specified to indicate the end of the header is not found")
+        error_text = "The text specified to indicate the end of the header is not found"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Header not found error:", text=error_text, alert_type="error",tags=tags) 
+
         return (False, 0)
     else:
         end_index = len(s) if footer_start_text is None else start_index + s[start_index:].find(footer_start_text)
         if end_index<start_index:
-            logger.error("The text specified to indicate the beginning of the footer is not found")
+            error_text = "The text specified to indicate the beginning of the footer is not found"
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Footer not found error:", text=error_text, alert_type="error",tags=tags) 
             return (False, 0)
             
     csv_str = s[start_index:end_index]
@@ -144,7 +152,9 @@ def csv_load(source_file_id,fname,conn,dest_table,header_end_text=None,footer_st
         key_fields = []
     else:        
         if not set(key_fields).issubset(df.keys()):
-            logger.error('key_fields must be a subset of csv fields. key_fields: %s, csv fields: %s', str(key_fields), str(df.keys()))
+            error_text = 'key_fields must be a subset of csv fields. key_fields: %s, csv fields: %s'% str(key_fields), str(df.keys())
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="key_fields error:", text=error_text, alert_type="error",tags=tags) 
             return (False,0)
     
     
@@ -215,7 +225,9 @@ def mdf_length_type_check(toks,fields,data_types,lengths,mandatory):
     if not len(fields) == len(data_types) == len(lengths) == len(mandatory):
         raise Exception("Invalid configuration passed to mdf_length_type_check. Lengths are %d %d %d %d",len(fields), len(data_types), len(lengths), len(mandatory))
     if not len(fields) == len(toks):
-        logger.error('Invalid token stream in meter data file. Too many or too few tokens. Expecting %d, found %d', len(fields), len(toks[1:]))
+        error_text = 'Invalid token stream in meter data file. Too many or too few tokens. Expecting %d, found %d'% len(fields), len(toks[1:])
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid token stream error:", text=error_text, alert_type="error",tags=tags)         
         return (False,[])
     tok_length = map(len,toks)
     vals = []        
@@ -228,16 +240,24 @@ def mdf_length_type_check(toks,fields,data_types,lengths,mandatory):
             tok_length[i] = len(toks[i])
         
         if mandatory[i] and tok_length[i]==0:   # for missing mandatory values
-            logger.error('Missing a mandatory value in field %s', fields[i])
+            error_text = 'Missing a mandatory value in field %s'% fields[i]
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Missing a mandatory value error:", text=error_text, alert_type="error",tags=tags)         
             return (False,[])
         if data_types[i] == 'C' and tok_length[i] not in (0,lengths[i]):
-            logger.error('Fixed length string of incorrect length in field %s. Expecting %d characters, found "%s"', fields[i], lengths[i], toks[i])
+            error_text = 'Fixed length string of incorrect length in field %s. Expecting %d characters, found "%s"'% fields[i], lengths[i], toks[i]
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Incorrect length error:", text=error_text, alert_type="error",tags=tags)         
             return (False,[])
         if data_types[i] == 'V' and tok_length[i] > lengths[i]:
-            logger.error('Value exceeds maximum allowed length in field %s. Expecting %d characters, found %d. Value is "%s"', fields[i], lengths[i], tok_length[i], toks[i])
+            error_text = 'Value exceeds maximum allowed length in field %s. Expecting %d characters, found %d. Value is "%s"'% fields[i], lengths[i], tok_length[i], toks[i]
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Exceeds maximum allowed length:", text=error_text, alert_type="error",tags=tags) 
             return (False,[])
         if data_types[i] == 'D' and tok_length[i] not in (0,lengths[i]):
-            logger.error('Datetime value of incorrect length in field %s. Expecting %d characters, found "%s"', fields[i], lengths[i], toks[i])
+            error_text = 'Datetime value of incorrect length in field %s. Expecting %d characters, found "%s"'% fields[i], lengths[i], toks[i]
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Datetime value of incorrect:", text=error_text, alert_type="error",tags=tags) 
             return (False,[])
         if data_types[i] == 'D' and tok_length[i] != 0:     # check that toks[i] contains a valid date
             try:
@@ -252,23 +272,33 @@ def mdf_length_type_check(toks,fields,data_types,lengths,mandatory):
                     h = m = 0
                 datetime(int(toks[i][0:4]),int(toks[i][4:6]),int(toks[i][6:8]),h,m,s)
             except ValueError:
-                logger.error('Invalid date value. Expecting Datetime(%d), found "%s"', lengths[i], toks[i])
+                error_text = 'Invalid date value. Expecting Datetime(%d), found "%s"'% lengths[i], toks[i]
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Invalid date value:", text=error_text, alert_type="error",tags=tags)
                 return (False,[])
         if data_types[i] == 'N' and int(lengths[i]) == lengths[i]:      # expecting integer
             if tok_length[i] > lengths[i]:
-                logger.error('Value exceeds maximum allowed length in field %s. Expecting max of %d characters, found %d. Value is "%s"', fields[i], lengths[i], tok_length[i], toks[i])
+                error_text = 'Value exceeds maximum allowed length in field %s. Expecting max of %d characters, found %d. Value is "%s"'% fields[i], lengths[i], tok_length[i], toks[i]
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Value exceeds maximum allowed length:", text=error_text, alert_type="error",tags=tags)
                 return (False,[])
             if len(toks[i]) > 0 and throws_a(lambda: int(toks[i]), ValueError):
-                logger.error('Invalid value encountered in field %s. Expecting integer, found "%s"', fields[i], toks[i])
+                error_text = 'Invalid value encountered in field %s. Expecting integer, found "%s"', fields[i], toks[i]
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Invalid value error:", text=error_text, alert_type="error",tags=tags)                
                 return (False,[])
         if data_types[i] == 'N' and int(lengths[i]) != lengths[i]:      # expecting float
             (pre,post) = map(int,str(lengths[i]).split('.')) # max digits expected before & after decimal place
             s = toks[i].split('.')            
             if len(s[0]) > pre or (len(s)>1 and len(s[1]) > post):
-                logger.error('Value exceeds maximum allowed length or precision in field %s. Expecting Numeric(%d.%d), found "%s"', fields[i], pre, post, toks[i])
+                error_text = 'Value exceeds maximum allowed length or precision in field %s. Expecting Numeric(%d.%d), found "%s"'% fields[i], pre, post, toks[i]
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Value exceeds maximum allowed length:", text=error_text, alert_type="error",tags=tags)                
                 return (False,[])
             if len(s)>2 or (len(s[0]) > 0 and throws_a(lambda: int(s[0]), ValueError)) or (len(s)==2 and (throws_a(lambda: int(s[1]), ValueError) or int(s[1])<0)) or throws_a(lambda: float(toks[i]), ValueError):
-                logger.error('Invalid value encountered in field %s. Expecting Numeric(%d.%d), found "%s"', fields[i], pre, post, toks[i])
+                error_text = 'Invalid value encountered in field %s. Expecting Numeric(%d.%d), found "%s"'% fields[i], pre, post, toks[i]
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Invalid value encountered in field:", text=error_text, alert_type="error",tags=tags)                                
                 return (False,[])
         
         if data_types[i] in ("C","V"):
@@ -284,7 +314,9 @@ def mdf_length_type_check(toks,fields,data_types,lengths,mandatory):
         elif data_types[i] == "N" and len(toks[i])==0:
             val = None
         else:
-            logger.error('Unhandled data type encountered in field %s', fields[i])
+            error_text = 'Unhandled data type encountered in field %s'% fields[i]
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Unhandled data type:", text=error_text, alert_type="error",tags=tags)                                
             return (False,[])
             
         vals.append(val)
@@ -303,7 +335,9 @@ def process_MDF_100(conn,version_header,toks,last_rec_ind,source_file_id):
     
     
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Meter data file error:", text=error_text, alert_type="error",tags=tags)                                
         return (False,[])
     
     # allocate tokens, confirm data types and field lengths as required
@@ -313,10 +347,14 @@ def process_MDF_100(conn,version_header,toks,last_rec_ind,source_file_id):
         
     # specific checks    
     if (version_header is not None) and version_header != toks[0]:
-        logger.error('VersionHeader in filename and 100 record do not match. Filename has %s and 100-record has %s', version_header, toks[0])
+        error_text = 'VersionHeader in filename and 100 record do not match. Filename has %s and 100-record has %s'% version_header, toks[0]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="VersionHeader not match:", text=error_text, alert_type="error",tags=tags)                                
         return (False,[])
     if toks[0] not in ("NEM12","NEM13"):
-        logger.error('VersionHeader in 100 record is invalid. Requires NEM12 or NEM13, found %s', toks[0])
+        error_text = 'VersionHeader in 100 record is invalid. Requires NEM12 or NEM13, found %s'% toks[0]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="VersionHeader invalid:", text=error_text, alert_type="error",tags=tags)                                        
         return (False,[])
             
     # no merge keys so just insert to database
@@ -339,7 +377,9 @@ def process_MDF_200(conn,version_header,toks,last_rec_ind,last100,source_file_id
     
     
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="File blocking error:", text=error_text, alert_type="error",tags=tags)                                                
         return (False,[])
     
     # allocate tokens, confirm data types and field lengths as required
@@ -350,21 +390,29 @@ def process_MDF_200(conn,version_header,toks,last_rec_ind,last100,source_file_id
     # specific checks
     # valid NMIConfiguration
     if not all(map(lambda x: match(r'[A-HJ-NP-Z][1-9A-HJ-NP-Z]',x) is not None,[vals[1][i:i+2] for i in xrange(0, len(vals[1]), 2)])):
-        logger.error('Invalid NMI Configuration. Found %s', vals[1])
+        error_text = 'Invalid NMI Configuration. Found %s'% vals[1]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid NMI Configuration:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # valid RegisterID?
     # valid NMISuffix
     if match(r'[A-HJ-NP-Z][1-9A-HJ-NP-Z]',vals[3]) is None:
-        logger.error('Invalid NMI Suffix. Found %s',vals[3])
+        error_text = 'Invalid NMI Suffix. Found %s'%vals[3]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid NMI Suffix:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # valid MDMDataStreamIdentifier?
     # valid UOM
     if not vals[6].lower() in ('mwh','kwh','wh','mvarh','kvarh','varh','mvar','kvar','var','mw','kw','w','mvah','kvah','vah','mva','kva','va','kv','v','ka','a','pf'):
-        logger.error('Invalid UOM encountered. Found value %s', vals[6])
+        error_text = 'Invalid UOM encountered. Found value %s'% vals[6]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid UOM:", text=error_text, alert_type="error",tags=tags)
         return (False,[])       
     # valid IntervalLength
     if not vals[7] in (1,5,10,15,30):
-        logger.error('Invalid IntervalLength value encountered. Found %d', vals[7])
+        error_text = 'Invalid IntervalLength value encountered. Found %d', vals[7]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid IntervalLength value:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
             
     # insert record to database, returning id
@@ -399,7 +447,9 @@ def process_MDF_300(conn,version_header,toks,last_rec_ind,last100,last200,source
     mandatory = [True] + [True for i in range(1,n_readings+1)] +[True,False,False,False,False]
         
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="File blocking error:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     
     # allocate tokens, confirm data types and field lengths as required
@@ -411,23 +461,33 @@ def process_MDF_300(conn,version_header,toks,last_rec_ind,last100,last200,source
     
     # valid qualitymethod
     if toks[qm] not in ('A','N','V') and match(r"[AEFNSV][1567][1-9]",toks[qm]) is None:    # note: detects most but not all illegal values
-        logger.error('Invalid QualityMethod value in 300 row. Found %s', toks[qm])
+        error_text = 'Invalid QualityMethod value in 300 row. Found %s'% toks[qm]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid QualityMethod value:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # reasoncode valid if provided
     if len(toks[qm+1])>0 and (vals[qm+1] < 0 or vals[qm+1]>94):
-        logger.error('Invalid ReasonCode supplied in 300 row. Found %s', toks[qm+1])
+        error_text = 'Invalid ReasonCode supplied in 300 row. Found %s'% toks[qm+1]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid ReasonCode supplied:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # no reasoncode if qualityflag is V
     if (vals[qm+1] is not None and toks[qm][0]=='V') or (vals[qm+1] is None and toks[qm][0] in ('F','S')):
-        logger.error('In 300 row, ReasonCode supplied with quality "V" or ReasonCode not supplied with Quality "F" or "S". Quality flag %s, ReasonCode %s', toks[qm][0], toks[qm+1])
+        error_text = 'In 300 row, ReasonCode supplied with quality "V" or ReasonCode not supplied with Quality "F" or "S". Quality flag %s, ReasonCode %s'% toks[qm][0], toks[qm+1]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="ReasonCode error:", text=error_text, alert_type="error",tags=tags)
         return (False,[])        
     # reasondescription supplied if reasoncode = 0
     if len(vals[qm+2]) < 1 and vals[qm+1]==0:
-        logger.error('Missing ReasonDescription where ReasonCode is 0 in 300 row')
+        error_text = 'Missing ReasonDescription where ReasonCode is 0 in 300 row'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Missing ReasonDescription:", text=error_text, alert_type="error",tags=tags)        
         return (False,[])
     # updatedatetime provided unless qualitymethod is N
     if vals[qm+3] is None and vals[qm][0] != 'N':
-        logger.error('Missing UpdateDateTime in 300 row where Quality is not "N"')
+        error_text = 'Missing UpdateDateTime in 300 row where Quality is not "N"'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Missing UpdateDateTime:", text=error_text, alert_type="error",tags=tags)                
         return (False,[])
             
     # merge quality record and return id
@@ -484,7 +544,9 @@ def process_MDF_400(conn,version_header,toks,last_rec_ind,last100,last200,last30
     qm = 2
     
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="File blocking error:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     
     # allocate tokens, confirm data types and field lengths as required
@@ -494,31 +556,45 @@ def process_MDF_400(conn,version_header,toks,last_rec_ind,last100,last200,last30
         
     # specific checks    
     if vals[0] < 1 or vals[1] < vals[0] or vals[1] > 1440/last200[7]:
-        logger.error('Illegal StartInterval/EndInterval values. StartInterval = %d, EndInterval = %d, IntervalLength = %d', vals[0], vals[1],last200[7] )
+        error_text = 'Illegal StartInterval/EndInterval values. StartInterval = %d, EndInterval = %d, IntervalLength = %d'% vals[0], vals[1],last200[7]
+        logger.error(error_text )
+        DataDogAPI.Event.create(title="Illegal StartInterval/EndInterval values:", text=error_text, alert_type="error",tags=tags)
         return (False,[])        
     if (last_rec_ind != '400' and vals[0] != 1) or (last_rec_ind == '400' and vals[0] != last400[1]+1):
-        logger.error('Mismatch between StartInterval and preceeding row in 400-record')
+        error_text = 'Mismatch between StartInterval and preceeding row in 400-record'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Mismatch StartInterval and preceeding row:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # valid qualitymethod
     if toks[qm] not in ('A','N') and match(r"[AEFNS][1567][1-9]",toks[qm]) is None:    # note: detects most but not all illegal values
-        logger.error('Invalid QualityMethod value in 400 row. Found %s', toks[qm])
+        error_text = 'Invalid QualityMethod value in 400 row. Found %s'% toks[qm]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid QualityMethod value:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # reasoncode valid if provided
     if len(toks[qm+1])>0 and (vals[qm+1] < 0 or vals[qm+1]>94):
-        logger.error('Invalid ReasonCode supplied in 400 row. Found %s', toks[qm+1])
+        error_text = 'Invalid ReasonCode supplied in 400 row. Found %s'% toks[qm+1]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid ReasonCode supplied:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # no reasoncode if qualityflag is V
     if (vals[qm+1] is not None and toks[qm][0]=='V') or (vals[qm+1] is None and toks[qm][0] in ('F','S')):
-        logger.error('In 400 row, ReasonCode supplied with quality "V" or ReasonCode not supplied with Quality "F" or "S". Quality flag %s, ReasonCode %s', toks[qm][0], toks[qm+1])
+        error_text = 'In 400 row, ReasonCode supplied with quality "V" or ReasonCode not supplied with Quality "F" or "S". Quality flag %s, ReasonCode %s'% toks[qm][0], toks[qm+1]
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="ReasonCode error:", text=error_text, alert_type="error",tags=tags)
         return (False,[])        
     # reasondescription supplied if reasoncode = 0
     if len(vals[qm+2]) < 1 and vals[qm+1]==0:
-        logger.error('Missing ReasonDescription where ReasonCode is 0 in 300 row')
+        error_text = 'Missing ReasonDescription where ReasonCode is 0 in 300 row'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Missing ReasonDescription:", text=error_text, alert_type="error",tags=tags)
         return (False,[])
     # last300 had qualityflag V, or its a single-record 400 row
   
     if last300[-6][0] != "V" and (vals[0] != 1 or vals[1] != 1440/last200[7]):
-        logger.error('400-record found after 300-row with quality not V')
+        error_text = '400-record found after 300-row with quality not V'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="400-record found after 300-row:", text=error_text, alert_type="error",tags=tags)        
         return (False,[])
             
     # merge quality record to database, returning id
@@ -547,7 +623,9 @@ def process_MDF_500(conn,version_header,toks,last_rec_ind,last100,last200,last30
     mandatory = [True,False,False,False]
         
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="File blocking error:", text=error_text, alert_type="error",tags=tags)        
         return (False,[])
     
     # allocate tokens, confirm data types and field lengths as required
@@ -576,7 +654,9 @@ def process_MDF_500(conn,version_header,toks,last_rec_ind,last100,last200,last30
 def process_MDF_900(conn,version_header,toks,last_rec_ind, source_file_id):
     valid_after = ['300','400','500']
     if not last_rec_ind in valid_after:      # check for file blocking errors
-        logger.error('Meter data file blocking error')
+        error_text = 'Meter data file blocking error'
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="File blocking error:", text=error_text, alert_type="error",tags=tags)                
         return (False,[])
         
     
@@ -638,11 +718,15 @@ def aemo_meter_data_handler(source_file_id,fname,conn):
             elif rec_ind == '550':
                 status,res = process_MDF_550(conn,version_header,toks[1:],last_rec_ind,last100,last250)
             else:
-                logger.error('Meter data file error. Invalid record indicator found in line %d: "%s"', line_number, rec_ind)
+                error_text = 'Meter data file error. Invalid record indicator found in line %d: "%s"'% line_number, rec_ind
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Meter data file error:", text=error_text, alert_type="error",tags=tags)                
                 status = False
             
             if status == False:
-                logger.error('Error encountered processing file %s. The error occurred at line number %d', fname, line_number)
+                error_text = 'Error encountered processing file %s. The error occurred at line number %d'% fname, line_number
+                logger.error(error_text)
+                DataDogAPI.Event.create(title="Error encountered processing file:", text=error_text, alert_type="error",tags=tags)                
                 return (False,0)
                 
 
@@ -652,7 +736,9 @@ def aemo_meter_data_handler(source_file_id,fname,conn):
             line_number = line_number + 1
         
         if len(f.read().strip()) > 0:
-            logger.error('Meter data file blocking error. File contents found following the end of a 100-900 block (line %d)', line_number)
+            error_text = 'Meter data file blocking error. File contents found following the end of a 100-900 block (line %d)'% line_number
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Meter data file blocking error:", text=error_text, alert_type="error",tags=tags)                
             raise
             
     conn.commit()
@@ -668,12 +754,16 @@ def spmdf_handler(source_file_id,fname,conn,header_end_text=None,footer_start_te
     # identify payload, top & tail
     start_index = 0 if header_end_text is None else s.find(header_end_text)+len(header_end_text)
     if header_end_text is not None and start_index<len(header_end_text):    # note: find returns -1 if string not found
-        logger.error("The text specified to indicate the end of the header is not found")
+        error_text = "The text specified to indicate the end of the header is not found"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Header not found:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
     else:
         end_index = len(s) if footer_start_text is None else start_index + s[start_index:].find(footer_start_text)
         if end_index<start_index:
-            logger.error("The text specified to indicate the beginning of the footer is not found")
+            error_text = "The text specified to indicate the beginning of the footer is not found"
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Footer not found:", text=error_text, alert_type="error",tags=tags)
             return (False, 0)
             
     csv_str = s[start_index:end_index]
@@ -704,7 +794,9 @@ def spmdf_handler(source_file_id,fname,conn,header_end_text=None,footer_start_te
     fields = set(df.keys())
     if not fields.issubset(valid_fields):
         bad = fields - set(valid_fields)
-        logger.error('Invalid fields names encountered reading file (field names are case-sensitive): ' + ','.join(bad))
+        error_text = 'Invalid fields names encountered reading file (field names are case-sensitive): ' + ','.join(bad)
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Invalid fields names:", text=error_text, alert_type="error",tags=tags)
         return (False, df if conn is None else 0)
     
 
@@ -715,29 +807,41 @@ def spmdf_handler(source_file_id,fname,conn,header_end_text=None,footer_start_te
         # date + time + intervallength
 
     if not 'IntervalLength' in fields:
-        logger.error("The compulsory field IntervalLength is missing")
+        error_text = "The compulsory field IntervalLength is missing"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="IntervalLength is missing:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
     if not (fields.issuperset(['Timestamp','TimestampType']) or fields.issuperset(['Date','PeriodID']) or fields.issuperset(['Date','Time','TimestampType'])):
-        logger.error("Time Interval incorrectly specified. Needs either Timestamp+TimestampType, Date+PeriodID, or Date+Time")
+        error_text = "Time Interval incorrectly specified. Needs either Timestamp+TimestampType, Date+PeriodID, or Date+Time"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Time Interval incorrectly specified:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
     # TODO: check that both PeriodID and Time are not supplied
-    if ('Timestamp' in fields and 'Date' in fields) or ('PeriodID' in fields and 'Time' in fields):    
-        logger.error("Duplicate time interval information specified. Needs either Timestamp+TimestampType, Date+PeriodID, or Date+Time")
+    if ('Timestamp' in fields and 'Date' in fields) or ('PeriodID' in fields and 'Time' in fields): 
+        error_text = "Duplicate time interval information specified. Needs either Timestamp+TimestampType, Date+PeriodID, or Date+Time"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Duplicate time interval information:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
         
     # ensure that meter info is properly specified. Needs either
         # MeterRef only
         # NMI + StreamRef
     if not (fields.issuperset(['MeterRef']) or fields.issuperset(['NMI','StreamRef'])):
-        logger.error("Meter information is incorrectly specified. Needs either MeterRef or NMI+StreamRef")
+        error_text = "Meter information is incorrectly specified. Needs either MeterRef or NMI+StreamRef"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Meter information is incorrectly specified:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
     if 'MeterRef' in fields and 'NMI' in fields:
-        logger.error("Duplicate meter information specified. Needs either MeterRef only or NMI+StreamRef")
+        error_text = "Duplicate meter information specified. Needs either MeterRef only or NMI+StreamRef"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Duplicate meter information specified:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
         
     # ensure that there is at least one value field
     if len(fields.intersection(['Net_KWH','Net_KVARH','Exp_KWH','Imp_KWH','Exp_KVARH','Imp_KVARH', 'KW', 'KVA']))==0:
-        logger.error("There must be at least one value field included in the file")
+        error_text = "There must be at least one value field included in the file"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Value field missing:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
         
     # Deal with 24:00 and 24:00:00 Times
@@ -748,11 +852,14 @@ def spmdf_handler(source_file_id,fname,conn,header_end_text=None,footer_start_te
     
     # validation checks
     if not set(df['IntervalLength']).issubset(set([15,30])):
-        logger.error("IntervalLength must be integer with values 15 and 30")
+        error_text = "IntervalLength must be integer with values 15 and 30"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="IntervalLength error:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
     if 'QualityCode' in fields and not set(df['QualityCode']).issubset(set([None,'A','E','F','I','S','X'])):
-        
-        logger.error("QualityCode must be A,E,F,I,S or X. Found " + ','.join(set(df['QualityCode']) - set([None,'A','E','F','I','S','X'])))
+        error_text = "QualityCode must be A,E,F,I,S or X. Found " + ','.join(set(df['QualityCode']) - set([None,'A','E','F','I','S','X']))
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="QualityCode error:", text=error_text, alert_type="error",tags=tags)
         return (False, 0)
     
     # add source file identifier
@@ -767,19 +874,29 @@ def spmdf_handler(source_file_id,fname,conn,header_end_text=None,footer_start_te
 
     # field-level validation
     if 'Imp_KWH' in fields and min(df['Imp_KWH']) < 0:
-        logger.error("Negative Imp_KWH values detected. Consider flip_signs argument")
+        error_text = "Negative Imp_KWH values detected. Consider flip_signs argument"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Negative Imp_KWH:", text=error_text, alert_type="error",tags=tags)        
         return (False,0)
     if 'Exp_KWH' in fields and min(df['Exp_KWH']) < 0:
-        logger.error("Negative Exp_KWH values detected. Consider flip_signs argument")
+        error_text = "Negative Exp_KWH values detected. Consider flip_signs argument"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Negative Exp_KWH:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
     if 'Imp_KVARH' in fields and min(df['Imp_KVARH']) < 0:
-        logger.error("Negative Imp_KVARH values detected. Consider flip_signs argument")
+        error_text = "Negative Imp_KVARH values detected. Consider flip_signs argument"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Negative Imp_KVARH:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
     if 'Exp_KVARH' in fields and min(df['Exp_KVARH']) < 0:
-        logger.error("Negative Exp_KVARH values detected. Consider flip_signs argument")
+        error_text = "Negative Exp_KVARH values detected. Consider flip_signs argument"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Negative Exp_KVARH:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
     if 'KVA' in fields and min(df['KVA']) < 0:
-        logger.error("Negative KVA values detected")
+        error_text = "Negative KVA values detected"
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Negative KVA:", text=error_text, alert_type="error",tags=tags)
         return (False,0)
         
     

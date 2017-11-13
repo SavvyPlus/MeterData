@@ -24,6 +24,8 @@ import logging.config
 import fnmatch
 import shutil
 import IMD_Handlers
+from datadog import initialize as DataDogInitialize
+from datadog import api as DataDogAPI
 
 
 def setup_logging(
@@ -44,6 +46,16 @@ def setup_logging(
         logging.config.dictConfig(config)
     else:
         logging.basicConfig(level=default_level)
+
+    config = configparser.ConfigParser()
+    config.read('DataDog.cfg')
+    api_key = str(config.get('Datadog Connection','api_key'))
+    app_key = str(config.get('Datadog Connection','app_key'))
+
+    DataDogInitialize(api_key=api_key,app_key=app_key) 
+
+# Logging tag
+tags = ['version:1', 'application:meter data loader']
 
 # Initialise logging
 logger = logging.getLogger(__name__)
@@ -67,7 +79,10 @@ def get_source_folder_list():
     try:
         conn = ceODBC.connect(db_connection_string)
     except:
-        logger.error("FATAL ERROR. Could not establish database connection using connection string %s", db_connection_string, exc_info=1)
+    	error_text = "FATAL ERROR. Could not establish database connection using connection string %s" % db_connection_string
+        logger.error(error_text, exc_info=1)
+        DataDogAPI.Event.create(title="FATAL ERROR:", text=error_text, alert_type="error",tags=tags) 
+
         time.sleep(db_connect_retry_seconds)
         return []        
         
@@ -154,7 +169,9 @@ def process_file(file_name, folder_tup):
     try:
         conn = ceODBC.connect(db_connection_string, autocommit=True)
     except ceODBC.Error:
-        logger.error("Error processing file: %s. Could not establish database connection using connection string %s", file_name, db_connection_string, exc_info=1)
+    	error_text = "Error processing file: %s. Could not establish database connection using connection string %s"% file_name, db_connection_string
+        logger.error(error_text, exc_info=1)
+        DataDogAPI.Event.create(title="Error processing file:", text=error_text, alert_type="error",tags=tags) 
         time.sleep(db_connect_retry_seconds)
         return False
         
@@ -166,7 +183,10 @@ def process_file(file_name, folder_tup):
         os.rename(file_fullname+".renamed", file_fullname)
 
     except EnvironmentError:
-        logger.error("File does not exist or is in use by another process: %s", file_fullname, exc_info=1)
+    	error_text = "File does not exist or is in use by another process: %s" % file_fullname
+        logger.error(error_text, exc_info=1)
+        DataDogAPI.Event.create(title="File error:", text=error_text, alert_type="error",tags=tags) 
+
         return False
 
                     
@@ -181,7 +201,9 @@ def process_file(file_name, folder_tup):
         conn.commit()
         
     except ceODBC.Error:
-        logger.error("Could not log file to database: %s", file_name)
+    	error_text = "Could not log file to database: %s"% file_name
+        logger.error(error_text)
+        DataDogAPI.Event.create(title="Load file error:", text=error_text, alert_type="error",tags=tags)         
         return False
     
     # handler parameters
@@ -189,10 +211,14 @@ def process_file(file_name, folder_tup):
         hp = ast.literal_eval(handler_params)
         hp = dict(hp)
     except SyntaxError:
-        logger.warn("Invalid handler parameter string encountered for file: %s. Illegal syntax for a Python literal: %s", file_name, handler_params)            
+    	warning_text = "Invalid handler parameter string encountered for file: %s. Illegal syntax for a Python literal: %s"% file_name, handler_params
+        logger.warn(waring_text)
+        DataDogAPI.Event.create(title="Invalid handler parameter", text=warning_text, alert_type="warning",tags=tags)            
         hp = {}
     except TypeError:
-        logger.warn("Invalid handler parameter string encountered for file: %s. Expecting a dict type", file_name)            
+    	warning_text = "Invalid handler parameter string encountered for file: %s. Expecting a dict type"% file_name
+        logger.warn("Invalid handler parameter string encountered for file: %s. Expecting a dict type", file_name)  
+        DataDogAPI.Event.create(title="Invalid handler parameter:", text=warning_text, alert_type="warning",tags=tags)                              
         hp = {}
     
         
@@ -208,10 +234,15 @@ def process_file(file_name, folder_tup):
             (success,recs_loaded) = IMD_Handlers.spmdf_handler(source_file_id=fileid,fname=file_fullname,conn=conn, **hp)            
         else:
             (success,recs_loaded) = (False,0)
-            logger.error("Invalid or unknown loading handler specified: %s", handler)
+            error_text = "Invalid or unknown loading handler specified: %s"% handler
+            logger.error(error_text)
+            DataDogAPI.Event.create(title="Invalid handler:", text=warning_text, alert_type="error",tags=tags)                         
     except Exception:
         (success,recs_loaded) = (False,0)
-        logger.error("Unknown error in loading handler while processing file %s", file_name, exc_info=1)
+        error_text = "Unknown error in loading handler while processing file %s", file_name
+        logger.error(error_text, exc_info=1)
+       	DataDogAPI.Event.create(title="Unknown error:", text=error_text, alert_type="error",tags=tags)                              
+
         
     
     if success:
@@ -224,7 +255,9 @@ def process_file(file_name, folder_tup):
     try:        
         shutil.move(file_fullname, dest_folder)    
     except EnvironmentError:
-        logger.error("Unable to move file: %s to location %s", file_name, dest_folder, exc_info=1)
+    	error_text = "Unable to move file: %s to location %s"% file_name, dest_folder
+        logger.error(error_text, exc_info=1)
+       	DataDogAPI.Event.create(title="Move file error:", text=error_text, alert_type="error",tags=tags)                              
         
         
     # write to loader file list in database
@@ -238,8 +271,9 @@ def process_file(file_name, folder_tup):
         conn.commit()
         
     except ceODBC.Error:
-        logger.warn("Could not log file processing status to database: %s", file_name)
-    
+    	warning_text = "Could not log file processing status to database: %s"% file_name
+        logger.warn(warning_text)
+        DataDogAPI.Event.create(title="Log file parameter:", text=warning_text, alert_type="warning",tags=tags)                                  	
         
     conn.close()
         
@@ -275,8 +309,10 @@ def main():
             
     except KeyboardInterrupt:        
         logger.info("Application terminated by user. Exiting")
-    except:
-        logger.error("Fatal error encountered. Exiting", exc_info=1)
+    except Exception as ex:
+    	error_text = "Fatal error encountered. Exiting"
+        logger.error(error_text, exc_info=1)
+        DataDogAPI.Event.create(title="Fatal error:", text=error_text + '\n'+ str(ex), alert_type="error",tags=tags)
         raise
         
         
